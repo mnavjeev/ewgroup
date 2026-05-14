@@ -1,0 +1,28 @@
+Package: ewgroup
+Title: Exponentially Weighted Grouped-Heterogeneity Estimator
+Version: 0.1.0
+Authors@R: c(
+    person("Manu", "Navjeevan", email = "mnavjeevan@tamu.edu", role = c("aut", "cre")),
+    person("Denis", "Chetverikov", role = "aut"),
+    person("Andrei", "Voronin", role = "aut")
+  )
+Author: Manu Navjeevan [aut, cre],
+  Denis Chetverikov [aut],
+  Andrei Voronin [aut]
+Maintainer: Manu Navjeevan <mnavjeevan@tamu.edu>
+Description: Implements an exponentially weighted estimator for grouped
+    heterogeneity in collections of noisy cell-specific estimates. The estimator
+    pools nearby preliminary estimates using covariance-adjusted exponential
+    weights and combines the pooled estimator with the naive estimator using a
+    feasible Stein unbiased risk estimate.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.2
+Depends:
+    R (>= 4.1.0)
+Imports:
+    stats
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

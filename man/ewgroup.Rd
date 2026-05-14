@@ -7,7 +7,14 @@
 \alias{print.ewgroup_fit}
 \title{Exponentially Weighted Grouped-Heterogeneity Estimator}
 \usage{
-ewgroup(beta_hat, Sigma_hat, sigma2, gamma = NULL, return_weights = FALSE)
+ewgroup(
+  beta_hat,
+  Sigma_hat,
+  sigma2,
+  gamma = NULL,
+  return_weights = FALSE,
+  return_derivative = FALSE
+)
 }
 \arguments{
 \item{beta_hat}{A numeric vector of length \code{J} for scalar effects or a
@@ -25,6 +32,11 @@ length-\code{J} list of \verb{d x d} matrices or a \verb{d x d x J} array.}
 
 \item{return_weights}{Logical; if \code{TRUE}, include the full \verb{J x J} matrix of
 exponential weights in the returned object.}
+
+\item{return_derivative}{Logical; if \code{TRUE}, include the cell-level derivative
+object in the returned object and diagnostics. The default \code{FALSE} skips
+materializing full Jacobian matrices when only the final estimate and SURE
+diagnostics are needed.}
 }
 \value{
 An object of class \code{"ewgroup_fit"} with the final estimate \code{theta},

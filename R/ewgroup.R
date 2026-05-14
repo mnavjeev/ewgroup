@@ -17,11 +17,16 @@
 #'   `0.2 / max_j lambda_max(Sigma_hat[[j]])`.
 #' @param return_weights Logical; if `TRUE`, include the full `J x J` matrix of
 #'   exponential weights in the returned object.
+#' @param return_derivative Logical; if `TRUE`, include the cell-level derivative
+#'   object in the returned object and diagnostics. The default `FALSE` skips
+#'   materializing full Jacobian matrices when only the final estimate and SURE
+#'   diagnostics are needed.
 #'
 #' @return An object of class `"ewgroup_fit"` with the final estimate `theta`,
 #'   the exponentially weighted estimate `tilde`, the SURE mixing weight
 #'   `alpha`, the tuning parameter `gamma`, and diagnostics.
 #' @aliases coef.ewgroup_fit fitted.ewgroup_fit print.ewgroup_fit
+#' @importFrom stats coef fitted
 #' @export
 #'
 #' @examples
@@ -30,7 +35,7 @@
 #' fit <- ewgroup(beta_hat, Sigma_hat, sigma2 = 0.05)
 #' coef(fit)
 ewgroup <- function(beta_hat, Sigma_hat, sigma2, gamma = NULL,
-                    return_weights = FALSE) {
+                    return_weights = FALSE, return_derivative = FALSE) {
   call <- match.call()
   beta <- as_beta_matrix(beta_hat)
   B <- beta$matrix
@@ -39,6 +44,9 @@ ewgroup <- function(beta_hat, Sigma_hat, sigma2, gamma = NULL,
 
   if (!is_scalar_logical(return_weights)) {
     stop("return_weights must be TRUE or FALSE.", call. = FALSE)
+  }
+  if (!is_scalar_logical(return_derivative)) {
+    stop("return_derivative must be TRUE or FALSE.", call. = FALSE)
   }
   if (!is.numeric(sigma2) || length(sigma2) != 1L ||
       !is.finite(sigma2) || sigma2 <= 0) {
@@ -65,11 +73,15 @@ ewgroup <- function(beta_hat, Sigma_hat, sigma2, gamma = NULL,
     B = B,
     Sigma = covariances$matrices,
     sigma2 = sigma2,
-    gamma = gamma
+    gamma = gamma,
+    return_jacobian = return_derivative,
+    return_weights = return_weights
   )
 
   theta <- core$alpha * core$tilde + (1 - core$alpha) * B
-  derivative <- if (d == 1L) {
+  derivative <- if (!return_derivative) {
+    NULL
+  } else if (d == 1L) {
     vapply(core$jacobian, function(x) x[1L, 1L], numeric(1L))
   } else {
     core$jacobian
@@ -91,7 +103,7 @@ ewgroup <- function(beta_hat, Sigma_hat, sigma2, gamma = NULL,
       lambda_max = covariances$lambda_max,
       sure_A = core$sure_A,
       sure_D = core$sure_D,
-      jacobian = core$jacobian
+      jacobian = if (return_derivative) core$jacobian else NULL
     ),
     call = call
   )
@@ -166,14 +178,33 @@ print.ewgroup_fit <- function(x, ...) {
   invisible(x)
 }
 
-ewgroup_core <- function(B, Sigma, sigma2, gamma) {
+ewgroup_core <- function(B, Sigma, sigma2, gamma, return_jacobian = TRUE,
+                         return_weights = TRUE) {
+  if (exists("ewgroup_core_cpp", mode = "function")) {
+    return(ewgroup_core_cpp(
+      B = B,
+      Sigma_hat = covariance_list_to_array(Sigma),
+      sigma2 = sigma2,
+      gamma = gamma,
+      return_jacobian = return_jacobian,
+      return_weights = return_weights
+    ))
+  }
+  ewgroup_core_r(B = B, Sigma = Sigma, sigma2 = sigma2, gamma = gamma)
+}
+
+ewgroup_core_r <- function(B, Sigma, sigma2, gamma) {
   J <- nrow(B)
   d <- ncol(B)
   I <- diag(d)
 
+  if (covariance_list_is_diagonal(Sigma)) {
+    return(ewgroup_core_diagonal(B = B, Sigma = Sigma, sigma2 = sigma2, gamma = gamma))
+  }
+
   Omega <- vector("list", J)
   for (k in seq_len(J)) {
-    Omega[[k]] <- gamma * solve(I - gamma * Sigma[[k]], I)
+    Omega[[k]] <- gamma * spd_inverse(I - gamma * Sigma[[k]])
     Omega[[k]] <- symmetrize_matrix(Omega[[k]])
   }
 
@@ -199,7 +230,7 @@ ewgroup_core <- function(B, Sigma, sigma2, gamma) {
     weights[j, ] <- w
 
     Gamma <- weighted_matrix_sum(w, Sigma) * gamma
-    H <- solve(I - Gamma, I)
+    H <- spd_inverse(I - Gamma)
     delta <- sweep(B, 2L, bj, "-")
     N <- as.numeric(crossprod(w, delta))
     tilde[j, ] <- bj + as.numeric(H %*% N)
@@ -225,6 +256,86 @@ ewgroup_core <- function(B, Sigma, sigma2, gamma) {
 
     jacobian[[j]] <- P
     trace_terms[j] <- sum(diag(Sigma[[j]] %*% (P - I)))
+  }
+
+  sure_A <- sum((tilde - B)^2)
+  sure_D <- sigma2 * sum(trace_terms)
+  alpha_unconstrained <- if (sure_A <= .Machine$double.eps) {
+    0
+  } else {
+    -sure_D / sure_A
+  }
+  alpha <- min(1, max(0, alpha_unconstrained))
+
+  list(
+    tilde = tilde,
+    alpha = alpha,
+    alpha_unconstrained = alpha_unconstrained,
+    sure_A = sure_A,
+    sure_D = sure_D,
+    weights = weights,
+    jacobian = jacobian
+  )
+}
+
+ewgroup_core_diagonal <- function(B, Sigma, sigma2, gamma) {
+  J <- nrow(B)
+  d <- ncol(B)
+  Sigma_diag <- matrix(0, nrow = J, ncol = d)
+  for (j in seq_len(J)) {
+    Sigma_diag[j, ] <- diag(Sigma[[j]])
+  }
+
+  Omega_diag <- gamma / (1 - gamma * Sigma_diag)
+  weights <- matrix(NA_real_, nrow = J, ncol = J)
+  log_weights <- matrix(0, nrow = J, ncol = J)
+
+  for (k in seq_len(J)) {
+    diff <- B
+    for (coordinate in seq_len(d)) {
+      diff[, coordinate] <- diff[, coordinate] - B[k, coordinate]
+    }
+    log_weights[, k] <- -0.5 * rowSums(
+      sweep(diff^2, 2L, Omega_diag[k, ], "*")
+    ) / sigma2
+  }
+
+  log_weights <- sweep(log_weights, 1L, apply(log_weights, 1L, max), "-")
+  weights <- exp(log_weights)
+  weights <- weights / rowSums(weights)
+
+  Gamma <- gamma * weights %*% Sigma_diag
+  H <- 1 / (1 - Gamma)
+  N <- weights %*% B - B
+  tilde <- B + H * N
+
+  jacobian <- vector("list", J)
+  trace_terms <- numeric(J)
+  delta_coordinate <- numeric(J)
+  score_coordinate <- numeric(J)
+  dw <- numeric(J)
+
+  for (j in seq_len(J)) {
+    w <- weights[j, ]
+    P <- matrix(0, nrow = d, ncol = d)
+    delta <- sweep(B, 2L, B[j, ], "-")
+
+    for (r in seq_len(d)) {
+      delta_coordinate <- delta[, r]
+      score_coordinate <- Omega_diag[, r] * delta_coordinate / sigma2
+      score_bar <- sum(w * score_coordinate)
+      dw <- w * (score_coordinate - score_bar)
+
+      dN <- as.numeric(crossprod(dw, delta))
+      dN[r] <- dN[r] - (1 - w[j])
+      dGamma <- gamma * as.numeric(crossprod(dw, Sigma_diag))
+
+      P[, r] <- H[j, ] * (dGamma * H[j, ] * N[j, ] + dN)
+      P[r, r] <- P[r, r] + 1
+    }
+
+    jacobian[[j]] <- P
+    trace_terms[j] <- sum(Sigma_diag[j, ] * (diag(P) - 1))
   }
 
   sure_A <- sum((tilde - B)^2)
@@ -348,7 +459,11 @@ normalize_covariances <- function(Sigma_hat, J = NULL, d = NULL,
     matrices <- vector("list", dims[3L])
     lambda_max <- numeric(dims[3L])
     for (j in seq_len(dims[3L])) {
-      checked <- check_covariance_matrix(Sigma_hat[, , j], d = d, tol = tol)
+      checked <- check_covariance_matrix(
+        matrix(Sigma_hat[, , j], nrow = dims[1L], ncol = dims[2L]),
+        d = d,
+        tol = tol
+      )
       matrices[[j]] <- checked$matrix
       lambda_max[j] <- checked$lambda_max
     }
@@ -399,8 +514,37 @@ weighted_matrix_sum <- function(weights, matrices) {
   out
 }
 
+covariance_list_to_array <- function(Sigma) {
+  d <- nrow(Sigma[[1L]])
+  J <- length(Sigma)
+  out <- array(0, dim = c(d, d, J))
+  for (j in seq_len(J)) {
+    out[, , j] <- Sigma[[j]]
+  }
+  out
+}
+
 symmetrize_matrix <- function(x) {
   0.5 * (x + t(x))
+}
+
+covariance_list_is_diagonal <- function(Sigma, tol = sqrt(.Machine$double.eps)) {
+  d <- nrow(Sigma[[1L]])
+  if (d == 1L) {
+    return(TRUE)
+  }
+  off_diagonal <- row(Sigma[[1L]]) != col(Sigma[[1L]])
+  for (j in seq_along(Sigma)) {
+    scale <- max(1, abs(Sigma[[j]]))
+    if (max(abs(Sigma[[j]][off_diagonal])) > tol * scale) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
+spd_inverse <- function(x) {
+  chol2inv(chol(symmetrize_matrix(x)))
 }
 
 is_scalar_logical <- function(x) {

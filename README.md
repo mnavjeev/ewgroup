@@ -34,3 +34,7 @@ fitted(fit)
 
 If `gamma` is omitted, the package uses
 `0.2 / max_j lambda_max(Sigma_hat_j)`.
+
+By default, `ewgroup()` skips materializing the full cell-level derivative
+object. Set `return_derivative = TRUE` when those derivative matrices are
+needed.

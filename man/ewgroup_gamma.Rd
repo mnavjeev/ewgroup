@@ -11,7 +11,8 @@ ewgroup_gamma(Sigma_hat, factor = 0.2)
 \code{\link[=ewgroup]{ewgroup()}}.}
 
 \item{factor}{Positive scalar multiplier. The default \code{0.2} corresponds to
-\verb{gamma = 0.2 / max_j lambda_max(Sigma_hat[[j]])}.}
+\verb{gamma = 0.2 / (d * max_j lambda_max(Sigma_hat[[j]]))}, where \code{d} is the
+covariance-matrix dimension.}
 }
 \value{
 A positive scalar tuning parameter.

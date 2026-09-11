@@ -1,6 +1,6 @@
 Package: ewgroup
 Title: Exponentially Weighted Grouped-Heterogeneity Estimator
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: c(
     person("Manu", "Navjeevan", email = "mnavjeevan@tamu.edu", role = c("aut", "cre")),
     person("Denis", "Chetverikov", role = "aut"),

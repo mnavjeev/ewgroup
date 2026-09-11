@@ -28,7 +28,8 @@ length-\code{J} list of \verb{d x d} matrices or a \verb{d x d x J} array.}
 \code{beta_hat[j, ]} is interpreted as \code{sigma2 * Sigma_hat[[j]]}.}
 
 \item{gamma}{Positive scalar tuning parameter. If \code{NULL}, the default is
-\verb{0.2 / max_j lambda_max(Sigma_hat[[j]])}.}
+\verb{0.2 / (d * max_j lambda_max(Sigma_hat[[j]]))}, where \code{d} is the
+coefficient dimension.}
 
 \item{return_weights}{Logical; if \code{TRUE}, include the full \verb{J x J} matrix of
 exponential weights in the returned object.}
@@ -49,6 +50,22 @@ The function implements the exponentially weighted estimator and SURE
 recombination described in the accompanying paper. Users provide the naive
 estimates and scaled covariance estimates; the function returns the final
 adaptive estimator.
+}
+\details{
+The implementation uses memory linear in the number of cells when
+\code{return_weights = FALSE}, including when derivatives are requested.
+Runtime remains quadratic in the number of cells. A full weights matrix
+requires approximately \code{8 * J^2} bytes. Both compiled and pure R
+implementations use this streaming calculation.
+
+Covariance matrices must have a common nonzero dimension. Symmetry and
+positive semidefiniteness are checked relative to each matrix's largest
+absolute entry with tolerance \code{sqrt(.Machine$double.eps)}. Tolerated
+negative eigenvalues in full matrices are projected to zero; diagonal
+variances must be nonnegative. SURE uses a scaled displacement norm,
+with \code{alpha = 0} for exactly zero displacement. Nonfinite numerical
+intermediates produce a rescaling error. Diagnostics smaller than machine
+precision may underflow to zero without changing the scale-aware mixing ratio.
 }
 \examples{
 beta_hat <- c(-1.2, -1.0, 0.4, 0.35, 1.1)

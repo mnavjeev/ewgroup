@@ -1,16 +1,25 @@
 reference_scalar <- function(y, sigma2, Sigma_hat, gamma = 0.20) {
-  Sigma_hat <- pmax(Sigma_hat, .Machine$double.eps)
+  # This helper is a small, direct scalar implementation used only by the tests.
+  # It gives the tests an independent answer to compare against the package
+  # function.
   if (any(gamma * Sigma_hat >= 1)) {
     stop("gamma * Sigma_hat must be below one for all cells.")
   }
 
+  # Compute the exponential weights. `outer(y, y, "-")` makes a table of all
+  # pairwise differences between cell estimates. `sweep()` then multiplies each
+  # column by that cell's distance scale.
   Omega <- gamma / (1 - gamma * Sigma_hat)
   diff <- outer(y, y, "-")
   log_weights <- -0.5 * sweep(diff^2, 2, Omega, "*") / sigma2
+
+  # Normalize each row of weights so it adds to one. Subtracting the row maximum
+  # keeps the exponential calculation stable.
   log_weights <- sweep(log_weights, 1, apply(log_weights, 1, max), "-")
   weights <- exp(log_weights)
   weights <- weights / rowSums(weights)
 
+  # Build the scalar version of the smoothed estimate.
   Gamma <- gamma * as.numeric(weights %*% Sigma_hat)
   H <- 1 / (1 - Gamma)
 
@@ -18,6 +27,8 @@ reference_scalar <- function(y, sigma2, Sigma_hat, gamma = 0.20) {
   N <- rowSums(weights * delta)
   tilde <- y + H * N
 
+  # Compute the derivative terms needed for the SURE blend weight. The tests use
+  # this to confirm the package's derivative output.
   score <- -sweep(diff, 2, Omega, "*") / sigma2
   score_bar <- rowSums(weights * score)
   d_weights <- weights * sweep(score, 1, score_bar, "-")
@@ -25,9 +36,11 @@ reference_scalar <- function(y, sigma2, Sigma_hat, gamma = 0.20) {
   d_Gamma <- gamma * rowSums(sweep(d_weights, 2, Sigma_hat, "*"))
   derivative <- 1 + H^2 * d_Gamma * N + H * d_N
 
+  # SURE chooses how much to trust the smoothed estimate. Clamp the result to
+  # [0, 1] so the final estimate is a blend of `tilde` and the original `y`.
   sure_A <- sum((y - tilde)^2)
   sure_D <- sigma2 * sum(Sigma_hat * (derivative - 1))
-  alpha_unconstrained <- if (sure_A <= .Machine$double.eps) 0 else -sure_D / sure_A
+  alpha_unconstrained <- if (sure_A == 0) 0 else -sure_D / sure_A
   alpha <- min(1, max(0, alpha_unconstrained))
   theta <- alpha * tilde + (1 - alpha) * y
 
@@ -43,7 +56,11 @@ reference_scalar <- function(y, sigma2, Sigma_hat, gamma = 0.20) {
   )
 }
 
+# `test_that()` comes from the testthat package. Each block names one behavior
+# and contains checks that must pass for that behavior.
 test_that("scalar implementation matches simulation reference", {
+  # Simple scalar data: five cells with one preliminary estimate and one
+  # covariance estimate per cell.
   y <- c(a = -1.1, b = -0.95, c = 0.2, d = 0.27, e = 1.3)
   Sigma_hat <- c(0.8, 1.1, 0.9, 1.2, 1.0)
   ref <- reference_scalar(y, sigma2 = 0.05, Sigma_hat = Sigma_hat, gamma = 0.2)
@@ -56,6 +73,8 @@ test_that("scalar implementation matches simulation reference", {
     return_derivative = TRUE
   )
 
+  # `expect_*()` helpers come from testthat. They stop the test if the actual
+  # value is not close enough to the expected value.
   expect_s3_class(fit, "ewgroup_fit")
   expect_equal(unname(fit$theta), unname(ref$theta), tolerance = 1e-12)
   expect_equal(unname(fit$tilde), unname(ref$tilde), tolerance = 1e-12)
@@ -68,23 +87,28 @@ test_that("scalar implementation matches simulation reference", {
   expect_equal(names(coef(fit)), names(y))
 })
 
-test_that("default gamma uses maximum covariance eigenvalue", {
+test_that("default gamma uses dimension and maximum covariance eigenvalue", {
+  # The default gamma should depend on the coefficient dimension and the
+  # largest eigenvalue across all covariance matrices. This test computes that
+  # value directly.
   Sigma <- list(
     diag(c(1, 2)),
     matrix(c(2, 0.1, 0.1, 3), nrow = 2)
   )
   B <- rbind(c(0, 0), c(1, -1))
-  expected <- 0.2 / max(vapply(
+  expected <- 0.2 / (ncol(B) * max(vapply(
     Sigma,
     function(x) max(eigen(x, symmetric = TRUE, only.values = TRUE)$values),
     numeric(1)
-  ))
+  )))
 
   expect_equal(ewgroup_gamma(Sigma), expected)
   expect_equal(ewgroup(B, Sigma, sigma2 = 0.1)$gamma, expected)
 })
 
 test_that("list and array covariance inputs agree for vector estimates", {
+  # Users can provide vector-valued covariance information either as a list of
+  # matrices or as one 3D array. The estimates should be identical.
   B <- rbind(
     cell1 = c(-1.0, 0.2),
     cell2 = c(-0.9, 0.1),
@@ -101,6 +125,7 @@ test_that("list and array covariance inputs agree for vector estimates", {
   fit_list <- ewgroup(B, Sigma, sigma2 = 0.1, gamma = 0.05, return_weights = TRUE)
   fit_array <- ewgroup(B, Sigma_array, sigma2 = 0.1, gamma = 0.05)
 
+  # Row sums of the weights should be one because each row is a weighted average.
   expect_equal(fit_array$theta, fit_list$theta, tolerance = 1e-12)
   expect_equal(fit_array$tilde, fit_list$tilde, tolerance = 1e-12)
   expect_equal(unname(rowSums(fit_list$weights)), rep(1, nrow(B)), tolerance = 1e-12)
@@ -114,6 +139,8 @@ test_that("list and array covariance inputs agree for vector estimates", {
 })
 
 test_that("derivative materialization is skipped by default", {
+  # The default call should avoid returning full derivative matrices, but it
+  # should still compute the same final estimates and SURE value.
   B <- rbind(
     cell1 = c(-1.0, 0.2),
     cell2 = c(-0.9, 0.1),
@@ -148,6 +175,8 @@ test_that("derivative materialization is skipped by default", {
 })
 
 test_that("one-column matrix accepts one-by-one covariance arrays", {
+  # Scalar estimates can be supplied as a vector or as a one-column matrix. This
+  # test checks that both forms give the same answer.
   y <- c(-1.1, -0.95, 0.2, 0.27, 1.3)
   Sigma_hat <- c(0.8, 1.1, 0.9, 1.2, 1.0)
   Sigma_array <- array(Sigma_hat, dim = c(1, 1, length(Sigma_hat)))
@@ -162,6 +191,8 @@ test_that("one-column matrix accepts one-by-one covariance arrays", {
 })
 
 test_that("analytic derivative matches finite differences", {
+  # A finite difference nudges one input value by a tiny amount and observes the
+  # resulting change in the output. It is a useful check for the derivative.
   B <- rbind(c(-1.0, 0.2), c(-0.8, 0.1), c(0.6, -0.3))
   Sigma <- list(
     matrix(c(1.0, 0.1, 0.1, 1.3), 2),
@@ -176,12 +207,15 @@ test_that("analytic derivative matches finite differences", {
   B_eps[j, ] <- B_eps[j, ] + eps * h
   fit_eps <- ewgroup(B_eps, Sigma, sigma2 = 0.1, gamma = 0.05)
 
+  # Compare the observed small-change effect to the derivative formula.
   finite_diff <- (fit_eps$tilde[j, ] - fit$tilde[j, ]) / eps
   analytic <- as.numeric(fit$derivative[[j]] %*% h)
   expect_equal(finite_diff, analytic, tolerance = 1e-5)
 })
 
 test_that("multivariate analytic derivative matches coordinate finite differences", {
+  # Repeat the finite-difference check for every cell and every coefficient in a
+  # three-coefficient example.
   B <- rbind(
     c(-1.0, 0.2, 0.4),
     c(-0.8, 0.1, 0.5),
@@ -199,6 +233,8 @@ test_that("multivariate analytic derivative matches coordinate finite difference
 
   for (j in seq_len(nrow(B))) {
     for (r in seq_len(ncol(B))) {
+      # Change one coordinate, recompute the estimator, and compare the output
+      # change to the matching derivative column.
       B_eps <- B
       B_eps[j, r] <- B_eps[j, r] + eps
       fit_eps <- ewgroup(B_eps, Sigma, sigma2 = 0.1, gamma = 0.05)
@@ -210,6 +246,7 @@ test_that("multivariate analytic derivative matches coordinate finite difference
 })
 
 test_that("input validation catches incompatible inputs", {
+  # These checks make sure clear errors are raised for common input mistakes.
   expect_error(ewgroup(c(1, 2), c(1), sigma2 = 0.1), "same length")
   expect_error(
     ewgroup(matrix(1:4, nrow = 2), c(1, 1), sigma2 = 0.1),
